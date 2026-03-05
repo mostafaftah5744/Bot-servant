@@ -23,12 +23,13 @@ log = logging.getLogger("ELITE")
 # ══════════════════════════════════════════════════════════════
 #  الإعدادات
 # ══════════════════════════════════════════════════════════════
-TOKEN     = "8675185329:AAH3_fSw5wU8FSHYlukQAqnxrGI2TZqEuuo"
+TOKEN     = "8675185329:AAEjB2PoLaqfxl9FDxI_cKkJHu-3xfKOMbM"
 ADMIN_ID  = 6918240643
 ADMIN_IDS = [6918240643]   # ← أضف أدمن: [6918240643, 123456789]
 
 bot      = telebot.TeleBot(TOKEN, threaded=True, num_threads=160)
 executor = ThreadPoolExecutor(max_workers=160)
+BOT_START_TIME = time.time()
 
 for d in ["ELITE_HOST","GHOST_VOLUMES","SYSTEM_CORES","LOGS","QUARANTINE"]:
     os.makedirs(d, exist_ok=True)
@@ -309,6 +310,62 @@ def scan_file(path:str) -> dict:
         result["warnings"].append(f"خطأ في الفحص: {e}")
     return result
 
+def check_bot_config(path:str) -> dict:
+    """فحص وجود التوكن والأدمن ID في ملف البوت"""
+    result = {
+        "has_token":   False,
+        "has_admin":   False,
+        "token_val":   None,
+        "admin_val":   None,
+        "token_type":  None,  # hardcoded / env
+        "admin_type":  None,
+        "warnings":    [],
+        "suggestions": [],
+    }
+    try:
+        with open(path,'r',encoding='utf-8',errors='replace') as f:
+            content = f.read()
+
+        # ── فحص التوكن ──────────────────────────────
+        # Hardcoded token مثل "123456:ABC..."
+        tok_match = re.search(r'["\'](\d{8,10}:[A-Za-z0-9_-]{35,})["\']', content)
+        if tok_match:
+            result["has_token"]  = True
+            result["token_type"] = "hardcoded"
+            result["token_val"]  = tok_match.group(1)[:20] + "..."
+        # env مثل os.environ.get("BOT_TOKEN") أو os.getenv("TOKEN")
+        elif re.search(r'(os\.environ|os\.getenv|environ\.get).*["\'][A-Z_]*TOKEN[A-Z_]*["\']', content, re.IGNORECASE):
+            result["has_token"]  = True
+            result["token_type"] = "env"
+            result["token_val"]  = "من متغيرات البيئة"
+        else:
+            result["warnings"].append("❌ مفيش توكن — ابحث عن TOKEN في الكود وحطه")
+            result["suggestions"].append("TOKEN = 'توكنك من @BotFather'")
+
+        # ── فحص الأدمن ID ────────────────────────────
+        admin_match = re.search(r'(ADMIN|OWNER|MASTER|admin_id|owner_id)\s*=\s*["\']?(\d{5,12})["\']?', content, re.IGNORECASE)
+        if admin_match:
+            result["has_admin"]  = True
+            result["admin_type"] = "hardcoded"
+            result["admin_val"]  = admin_match.group(2)
+        elif re.search(r'(os\.environ|os\.getenv|environ\.get).*["\'][A-Z_]*(?:ADMIN|OWNER|MASTER)[A-Z_]*["\']', content, re.IGNORECASE):
+            result["has_admin"]  = True
+            result["admin_type"] = "env"
+            result["admin_val"]  = "من متغيرات البيئة"
+        else:
+            result["warnings"].append("❌ مفيش ADMIN_ID — حط ID الأدمن في الكود")
+            result["suggestions"].append("ADMIN_ID = رقمك (اكتب /id للبوت تعرفه)")
+
+        # ── تحقق من صحة التوكن شكلاً ─────────────────
+        if result["token_type"] == "hardcoded" and tok_match:
+            tok = tok_match.group(1)
+            if not re.match(r'^\d{8,10}:[A-Za-z0-9_-]{35,}$', tok):
+                result["warnings"].append("⚠️ التوكن شكله غلط — تأكد منه من @BotFather")
+
+    except Exception as e:
+        result["warnings"].append(f"خطأ في الفحص: {e}")
+    return result
+
 # ══════════════════════════════════════════════════════════════
 #  تثبيت المكاتب
 # ══════════════════════════════════════════════════════════════
@@ -373,8 +430,13 @@ def launch(path:str, name:str=None):
 def stop_file(name:str):
     info = running_procs.pop(name, None)
     if info:
-        try: info["proc"].terminate()
-        except: pass
+        try:
+            import signal, os
+            # اقتل كل العمليات الفرعية (process group)
+            os.killpg(os.getpgid(info["proc"].pid), signal.SIGKILL)
+        except:
+            try: info["proc"].kill()
+            except: pass
     if name in db["files"]:
         db["files"][name]["active"] = False; save()
 
@@ -413,42 +475,89 @@ def scheduler():
 
 threading.Thread(target=scheduler, daemon=True).start()
 
+# ── باك أب تلقائي كل 6 ساعات ────────────────────────────────
+def auto_backup():
+    while True:
+        time.sleep(6 * 3600)
+        try:
+            if os.path.exists(DB_FILE):
+                with open(DB_FILE,'rb') as f:
+                    bot.send_document(ADMIN_ID, f,
+                        caption=f"💾 *باك أب تلقائي*\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                        parse_mode="Markdown")
+        except: pass
+
+threading.Thread(target=auto_backup, daemon=True).start()
+
+# ── مراقب صحة العمليات كل دقيقة ─────────────────────────────
+def health_monitor():
+    while True:
+        time.sleep(60)
+        dead = []
+        for name, info in list(running_procs.items()):
+            try:
+                p = psutil.Process(info["pid"])
+                # لو العملية أكلت أكتر من 90% RAM → تحذير
+                if p.memory_percent() > 90:
+                    bot.send_message(ADMIN_ID,
+                        f"⚠️ *تحذير RAM!*\n`{name}` بيستخدم `{p.memory_percent():.1f}%` من الذاكرة!",
+                        parse_mode="Markdown")
+            except psutil.NoSuchProcess:
+                dead.append(name)
+        for name in dead:
+            if name in running_procs:
+                running_procs.pop(name)
+                if name in db["files"]:
+                    db["files"][name]["active"] = False; save()
+
+threading.Thread(target=health_monitor, daemon=True).start()
+
 # ══════════════════════════════════════════════════════════════
 #  لوحات المفاتيح
 # ══════════════════════════════════════════════════════════════
 def kb_owner():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
-    m.add(types.KeyboardButton("📤 رفع ملف للاستضافة", request_document=True))
     m.add(
         "🖥 الاستضافة",     "⚙️ الحاويات",      "🔍 مراقبة العمليات",
         "📡 موارد السيرفر", "📋 السجلات",        "📊 الإحصائيات",
         "👥 المستخدمون",    "🔐 لوحة الأدمن",    "🧹 تطهير",
         "🖥️ Shell",         "📁 الملفات",        "⏰ المجدولة",
-        "🚨 الحجر الصحي",   "💀 إيقاف الكل",
+        "🚨 الحجر الصحي",   "💀 إيقاف الكل",     "🔄 تحديث البوت",
+        "💾 باك أب",        "📦 تثبيت مكاتب",    "🔎 فحص ملف",
+        "📢 بث رسالة",      "🌐 فحص IP",         "📝 ملاحظات",
+        "⚡ تسريع",         "🔒 قفل البوت",      "🗑 مسح السجلات",
+        "🕐 وقت التشغيل",   "🔑 توليد كلمة سر",  "📌 تثبيت رسالة",
+        "🌡 درجة CPU",      "📋 نسخ السجل",      "🔃 إعادة تشغيل الكل",
     )
     return m
 
 def kb_admin():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
-    m.add(types.KeyboardButton("📤 رفع ملف للاستضافة", request_document=True))
     m.add(
         "🖥 الاستضافة",     "⚙️ الحاويات",      "🔍 مراقبة العمليات",
         "📡 موارد السيرفر", "📋 السجلات",        "📊 الإحصائيات",
         "👥 المستخدمون",    "📁 الملفات",        "⏰ المجدولة",
-        "💀 إيقاف الكل",
+        "💀 إيقاف الكل",    "💾 باك أب",         "📦 تثبيت مكاتب",
+        "📢 بث رسالة",      "🔎 فحص ملف",        "🔃 إعادة تشغيل الكل",
+        "🕐 وقت التشغيل",   "🌡 درجة CPU",       "🗑 مسح السجلات",
     )
     return m
 
 def kb_vip():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    m.add(types.KeyboardButton("📤 رفع ملف للاستضافة", request_document=True))
-    m.add("📂 ملفاتي", "📡 السيرفر", "ℹ️ مساعدة")
+    m.add(
+        "📂 ملفاتي",       "📡 السيرفر",
+        "🔎 فحص ملف",      "🔑 توليد كلمة سر",
+        "🕐 وقت التشغيل",  "ℹ️ مساعدة",
+    )
     return m
 
 def kb_user():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    m.add(types.KeyboardButton("📤 رفع ملف للاستضافة", request_document=True))
-    m.add("📂 ملفاتي", "ℹ️ مساعدة")
+    m.add(
+        "📂 ملفاتي",      "🔎 فحص ملف",
+        "🔑 توليد كلمة سر", "ℹ️ مساعدة",
+    )
     return m
 
 def get_kb(uid:str):
@@ -460,25 +569,32 @@ def get_kb(uid:str):
 
 def kb_file(fname):
     m = types.InlineKeyboardMarkup(row_width=3)
-    active = db["files"].get(fname,{}).get("active",False)
-    ar     = db["files"].get(fname,{}).get("auto_restart",False)
+    active  = db["files"].get(fname,{}).get("active",False)
+    ar      = db["files"].get(fname,{}).get("auto_restart",False)
+    pinned  = db["files"].get(fname,{}).get("pinned",False)
     m.add(
         types.InlineKeyboardButton("⏹ إيقاف" if active else "▶️ تشغيل", callback_data=f"tog_{fname}"),
-        types.InlineKeyboardButton("🔄 إعادة",  callback_data=f"rst_{fname}"),
-        types.InlineKeyboardButton("🗑 حذف",    callback_data=f"del_{fname}"),
+        types.InlineKeyboardButton("🔄 إعادة",   callback_data=f"rst_{fname}"),
+        types.InlineKeyboardButton("🗑 حذف",     callback_data=f"del_{fname}"),
     )
     m.add(
-        types.InlineKeyboardButton("📋 لوج",    callback_data=f"log_{fname}"),
-        types.InlineKeyboardButton("📥 تحميل",  callback_data=f"dwn_{fname}"),
-        types.InlineKeyboardButton("🔁 Auto" if not ar else "🔁 إيقاف Auto", callback_data=f"ar_{fname}"),
+        types.InlineKeyboardButton("📋 لوج",     callback_data=f"log_{fname}"),
+        types.InlineKeyboardButton("📥 تحميل",   callback_data=f"dwn_{fname}"),
+        types.InlineKeyboardButton("🔁 Auto" if not ar else "⏹ Auto", callback_data=f"ar_{fname}"),
     )
     m.add(
-        types.InlineKeyboardButton("🌍 ENV",    callback_data=f"env_{fname}"),
-        types.InlineKeyboardButton("📊 موارد",  callback_data=f"res_{fname}"),
-        types.InlineKeyboardButton("📦 مكاتب",  callback_data=f"pip_{fname}"),
+        types.InlineKeyboardButton("🌍 ENV",     callback_data=f"env_{fname}"),
+        types.InlineKeyboardButton("📊 موارد",   callback_data=f"res_{fname}"),
+        types.InlineKeyboardButton("📦 مكاتب",   callback_data=f"pip_{fname}"),
     )
     m.add(
-        types.InlineKeyboardButton("⏰ جدولة",  callback_data=f"sched_{fname}"),
+        types.InlineKeyboardButton("⏰ جدولة",   callback_data=f"sched_{fname}"),
+        types.InlineKeyboardButton("📌 تثبيت" if not pinned else "📌 إلغاء", callback_data=f"pin_{fname}"),
+        types.InlineKeyboardButton("🔎 فحص",     callback_data=f"chk_{fname}"),
+    )
+    m.add(
+        types.InlineKeyboardButton("✏️ إعادة تسمية", callback_data=f"ren_{fname}"),
+        types.InlineKeyboardButton("📋 نسخ مسار",    callback_data=f"pth_{fname}"),
     )
     return m
 
@@ -555,11 +671,48 @@ def handle_upload(m):
     uid  = reg_user(m)
     role = get_role(uid)
 
+    # لو البوت مقفول والمستخدم مش أدمن
+    if db.get("locked") and not is_staff(uid):
+        bot.reply_to(m, "🔒 البوت مقفول حالياً. جرّب بعدين."); return
+
     def deploy():
         try:
             fname = m.document.file_name
             ext   = os.path.splitext(fname)[1].lower()
             raw   = bot.download_file(bot.get_file(m.document.file_id).file_path)
+
+            # ── وضع فحص فقط بدون رفع ─────────────────
+            state = user_states.get(uid, {})
+            if state.get("action") == "scan_only" and ext == ".py":
+                user_states.pop(uid, None)
+                tmp = f"/tmp/scan_{fname}"
+                with open(tmp,'wb') as f: f.write(raw)
+                scan   = scan_file(tmp)
+                config = check_bot_config(tmp)
+                os.remove(tmp)
+                tok_line   = f"{'✅' if config['has_token'] else '❌'} التوكن: `{config['token_val'] or 'غير موجود'}` ({config['token_type'] or '-'})"
+                admin_line = f"{'✅' if config['has_admin'] else '❌'} الأدمن ID: `{config['admin_val'] or 'غير موجود'}` ({config['admin_type'] or '-'})"
+                sugg_lines = ("\n💡 " + " | ".join(config["suggestions"])) if config["suggestions"] else ""
+                libs_txt   = f"\n📦 مكاتب: `{', '.join(scan['to_install'])}`" if scan["to_install"] else "\n📦 لا تحتاج مكاتب"
+                danger_txt = ("\n🔴 " + "\n🔴 ".join(scan["danger"])) if scan["danger"] else ""
+                bot.reply_to(m,
+                    f"🔎 *نتيجة الفحص: {fname}*\n━━━━━━━━━━━━━━━━━\n"
+                    f"🤖 *إعدادات البوت:*\n{tok_line}\n{admin_line}{sugg_lines}\n\n"
+                    f"🔍 *الأمان:* {'✅ آمن' if scan['safe'] else '⚠️ مشاكل!'}{libs_txt}{danger_txt}",
+                    parse_mode="Markdown")
+                return
+
+            # ── تحديث البوت ────────────────────────────
+            if state.get("action") == "update_bot" and fname == "bot.py":
+                user_states.pop(uid, None)
+                new_path = "bot.py"
+                with open(new_path,'wb') as f: f.write(raw)
+                bot.reply_to(m,
+                    "🔄 *تم استلام التحديث!*\n♻️ جارٍ إعادة التشغيل...",
+                    parse_mode="Markdown")
+                time.sleep(1)
+                os.execv(sys.executable, [sys.executable, "bot.py"])
+                return
 
             # ── requirements.txt ──────────────────────
             if fname == "requirements.txt":
@@ -589,16 +742,25 @@ def handle_upload(m):
 
             # ── فحص الأمان + اكتشاف المكاتب ──────────
             if ext == ".py":
-                scan = scan_file(path)
+                scan   = scan_file(path)
+                config = check_bot_config(path)
+
+                # رسالة فحص التوكن والأدمن
+                tok_line   = f"{'✅' if config['has_token'] else '❌'} التوكن: `{config['token_val'] or 'غير موجود'}` ({config['token_type'] or '-'})"
+                admin_line = f"{'✅' if config['has_admin'] else '❌'} الأدمن ID: `{config['admin_val'] or 'غير موجود'}` ({config['admin_type'] or '-'})"
+                sugg_lines = ("\n\n💡 *اقتراحات:*\n" + "\n".join([f"`{s}`" for s in config["suggestions"]])) if config["suggestions"] else ""
+                warn_lines = ("\n".join(config["warnings"])) if config["warnings"] else ""
 
                 # بناء رسالة الفحص
-                scan_txt = "✅ *آمن*" if scan["safe"] else "⚠️ *فيه مشاكل!*"
-                libs_txt  = f"\n📦 مكاتب مكتشفة: `{', '.join(scan['to_install']) or 'لا شيء'}`" if scan["to_install"] else "\n📦 لا تحتاج مكاتب إضافية"
+                scan_txt  = "✅ *آمن*" if scan["safe"] else "⚠️ *فيه مشاكل!*"
+                libs_txt  = f"\n📦 مكاتب: `{', '.join(scan['to_install'])}`" if scan["to_install"] else "\n📦 لا تحتاج مكاتب إضافية"
                 danger_txt = ("\n🔴 " + "\n🔴 ".join(scan["danger"])) if scan["danger"] else ""
 
                 bot.reply_to(m,
                     f"✅ *تم الرفع:* `{fname}`\n📦 `{len(raw)//1024} KB`\n\n"
-                    f"🔍 *الفحص:* {scan_txt}{libs_txt}{danger_txt}",
+                    f"🤖 *فحص البوت:*\n{tok_line}\n{admin_line}"
+                    f"{sugg_lines}\n{warn_lines}\n\n"
+                    f"🔍 *الأمان:* {scan_txt}{libs_txt}{danger_txt}",
                     parse_mode="Markdown",
                     reply_markup=kb_file(fname) if is_staff(uid) else None
                 )
@@ -842,8 +1004,62 @@ def callbacks(call):
             try: bot.edit_message_text(f"🗑 تم حذف `{tgt}` من الحجر.", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
             except: pass
 
-    # ══ لوحة الأدمن ══════════════════════
-    elif act == "ap":
+    elif act == "qdelete":
+        if only_owner(): return
+        entry = next((e for e in db["quarantine"] if e["fname"]==tgt), None)
+        if entry:
+            db["quarantine"].remove(entry)
+            if tgt in db["files"]: del db["files"][tgt]
+            try:
+                if os.path.exists(entry["path"]): os.remove(entry["path"])
+            except: pass
+            save()
+            bot.answer_callback_query(call.id,"🗑 حُذف")
+            try: bot.edit_message_text(f"🗑 تم حذف `{tgt}` من الحجر.", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+            except: pass
+
+    # ── تثبيت الملف (pin) ────────────────────
+    elif act == "pin":
+        if only_staff(): return
+        if tgt in db["files"]:
+            cur = db["files"][tgt].get("pinned", False)
+            db["files"][tgt]["pinned"] = not cur; save()
+            bot.answer_callback_query(call.id, "📌 تم التثبيت" if not cur else "📌 إلغاء التثبيت")
+            try: bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=kb_file(tgt))
+            except: pass
+
+    # ── فحص الملف (chk) ──────────────────────
+    elif act == "chk":
+        if only_staff(): return
+        bot.answer_callback_query(call.id)
+        if tgt in db["files"]:
+            path = db["files"][tgt].get("path","")
+            if os.path.exists(path):
+                scan   = scan_file(path)
+                config = check_bot_config(path)
+                tok    = f"{'✅' if config['has_token'] else '❌'} التوكن: `{config['token_val'] or 'غير موجود'}`"
+                adm    = f"{'✅' if config['has_admin'] else '❌'} الأدمن: `{config['admin_val'] or 'غير موجود'}`"
+                libs   = f"📦 `{', '.join(scan['to_install'])}`" if scan["to_install"] else "📦 لا تحتاج مكاتب"
+                danger = ("\n🔴 " + "\n🔴 ".join(scan["danger"])) if scan["danger"] else "\n✅ آمن"
+                bot.send_message(call.message.chat.id,
+                    f"🔎 *فحص: {tgt}*\n━━━━━━━━━━━━━━━━━\n{tok}\n{adm}\n{libs}{danger}",
+                    parse_mode="Markdown")
+
+    # ── إعادة تسمية (ren) ────────────────────
+    elif act == "ren":
+        if only_staff(): return
+        bot.answer_callback_query(call.id)
+        user_states[uid] = {"action":"rename_file","file":tgt}
+        bot.send_message(call.message.chat.id,
+            f"✏️ اكتب الاسم الجديد لـ `{tgt}`:", parse_mode="Markdown")
+
+    # ── مسار الملف (pth) ─────────────────────
+    elif act == "pth":
+        bot.answer_callback_query(call.id)
+        if tgt in db["files"]:
+            path = db["files"][tgt].get("path","")
+            bot.send_message(call.message.chat.id,
+                f"📋 *مسار الملف:*\n`{path}`", parse_mode="Markdown")
         if only_owner(): return
         bot.answer_callback_query(call.id)
         sub = tgt  # الأمر الفرعي
@@ -998,6 +1214,62 @@ def main_handler(m):
                     count += 1; time.sleep(0.05)
                 except: pass
             bot.reply_to(m, f"📢 *أُرسلت لـ {count} مستخدم.*", parse_mode="Markdown")
+
+        elif act == "check_ip":
+            def do_ip():
+                try:
+                    import urllib.request
+                    target = text.strip()
+                    url = f"http://ip-api.com/json/{target}?fields=status,country,regionName,city,isp,org,as,query,lat,lon,timezone"
+                    with urllib.request.urlopen(url, timeout=10) as r:
+                        data = json.loads(r.read())
+                    if data.get("status") == "success":
+                        bot.reply_to(m,
+                            f"🌐 *فحص IP: {data.get('query')}*\n━━━━━━━━━━━━━━━━━\n"
+                            f"🌍 الدولة: `{data.get('country')}`\n"
+                            f"🏙 المدينة: `{data.get('city')}`\n"
+                            f"📡 ISP: `{data.get('isp')}`\n"
+                            f"🏢 المنظمة: `{data.get('org')}`\n"
+                            f"🕐 التوقيت: `{data.get('timezone')}`\n"
+                            f"📍 {data.get('lat')}, {data.get('lon')}",
+                            parse_mode="Markdown")
+                    else:
+                        bot.reply_to(m, f"❌ مش قادر يفحص `{target}`", parse_mode="Markdown")
+                except Exception as e:
+                    bot.reply_to(m, f"❌ خطأ: `{e}`", parse_mode="Markdown")
+            executor.submit(do_ip)
+
+        elif act == "add_note":
+            if text != "/skip":
+                db.setdefault("notes",[]).append(f"{text} — {datetime.now().strftime('%d/%m %H:%M')}"); save()
+                bot.reply_to(m, "📝 تم حفظ الملاحظة ✅", parse_mode="Markdown")
+
+        elif act == "pin_msg":
+            if role != ROLE_OWNER: return
+            count = 0
+            for u in list(db["users"].keys()):
+                try:
+                    bot.send_message(int(u), f"📌 *رسالة مثبّتة:*\n\n{text}", parse_mode="Markdown")
+                    count += 1; time.sleep(0.05)
+                except: pass
+            bot.reply_to(m, f"📌 *تم إرسال الرسالة المثبّتة لـ {count} مستخدم*", parse_mode="Markdown")
+
+        elif act == "rename_file":
+            old_name = state["file"]
+            new_name = text.strip()
+            if old_name in db["files"] and new_name:
+                old_path = db["files"][old_name]["path"]
+                new_path = f"ELITE_HOST/{new_name}"
+                try:
+                    os.rename(old_path, new_path)
+                    db["files"][new_name] = db["files"].pop(old_name)
+                    db["files"][new_name]["path"] = new_path
+                    if old_name in running_procs:
+                        running_procs[new_name] = running_procs.pop(old_name)
+                    save()
+                    bot.reply_to(m, f"✅ تم تغيير الاسم:\n`{old_name}` ← `{new_name}`", parse_mode="Markdown")
+                except Exception as e:
+                    bot.reply_to(m, f"❌ `{e}`", parse_mode="Markdown")
 
         elif act.startswith("panel_"):
             if not is_staff(uid): return
@@ -1162,6 +1434,168 @@ def main_handler(m):
                 f"🔴 " + "\n🔴 ".join(entry.get("dangers",[])),
                 parse_mode="Markdown", reply_markup=mk)
 
+    elif text == "💾 باك أب":
+        if not is_staff(uid): return
+        try:
+            if os.path.exists(DB_FILE):
+                with open(DB_FILE,'rb') as f:
+                    bot.send_document(m.chat.id, f,
+                        caption=f"💾 *باك أب قاعدة البيانات*\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                        parse_mode="Markdown")
+            else:
+                bot.reply_to(m,"❌ لا توجد قاعدة بيانات.")
+        except Exception as e:
+            bot.reply_to(m, f"❌ `{e}`", parse_mode="Markdown")
+
+    elif text == "📦 تثبيت مكاتب":
+        if not is_staff(uid): return
+        user_states[uid] = {"action":"pip_install","file":None}
+        bot.reply_to(m,
+            "📦 اكتب المكاتب اللي عايز تثبّتها:\nمثال: `requests flask aiohttp`",
+            parse_mode="Markdown")
+
+    elif text == "🔎 فحص ملف":
+        user_states[uid] = {"action":"scan_only"}
+        bot.reply_to(m,
+            "🔎 *ابعت الملف اللي عايز تفحصه*\n"
+            "هيبعتلك:\n"
+            "• ✅ آمن أو ⚠️ مشاكل\n"
+            "• 🤖 وجود التوكن والأدمن ID\n"
+            "• 📦 المكاتب المحتاجة\n"
+            "بدون ما يتشغّل أو يترفع",
+            parse_mode="Markdown")
+
+    elif text == "🔄 تحديث البوت":
+        if role != ROLE_OWNER: return
+        bot.reply_to(m,
+            "🔄 *تحديث البوت*\n━━━━━━━━━━━━━━━━━\n"
+            "ابعت الملف الجديد `bot.py` وهيتحدث تلقائياً.\n"
+            "⚠️ البيانات مش هتتحذف.",
+            parse_mode="Markdown")
+        user_states[uid] = {"action":"update_bot"}
+
+    elif text == "📢 بث رسالة":
+        if not is_staff(uid): return
+        user_states[uid] = {"action":"broadcast"}
+        bot.reply_to(m, "📢 اكتب الرسالة اللي عايز تبعتها لكل المستخدمين:", parse_mode="Markdown")
+
+    elif text == "🌐 فحص IP":
+        if not is_staff(uid): return
+        user_states[uid] = {"action":"check_ip"}
+        bot.reply_to(m, "🌐 ابعت IP أو دومين عايز تفحصه:", parse_mode="Markdown")
+
+    elif text == "📝 ملاحظات":
+        if role != ROLE_OWNER: return
+        notes = db.get("notes", [])
+        if not notes:
+            bot.reply_to(m, "📝 لا توجد ملاحظات.")
+        else:
+            txt = "\n".join([f"• {n}" for n in notes[-10:]])
+            bot.reply_to(m, f"📝 *الملاحظات:*\n{txt}", parse_mode="Markdown")
+        user_states[uid] = {"action":"add_note"}
+        bot.send_message(m.chat.id, "اكتب ملاحظة جديدة أو /skip للتخطي:")
+
+    elif text == "⚡ تسريع":
+        if role != ROLE_OWNER: return
+        import gc
+        collected = gc.collect()
+        bot.reply_to(m,
+            f"⚡ *تم تنظيف الذاكرة*\n"
+            f"🗑 محذوف: `{collected}` كائن\n"
+            f"🔧 Threads: `{threading.active_count()}`\n"
+            f"💾 RAM: `{psutil.virtual_memory().percent}%`",
+            parse_mode="Markdown")
+
+    elif text == "🔒 قفل البوت":
+        if role != ROLE_OWNER: return
+        locked = db.get("locked", False)
+        db["locked"] = not locked; save()
+        state = "🔒 مقفول" if not locked else "🔓 مفتوح"
+        bot.reply_to(m, f"البوت الآن: *{state}*\n{'المستخدمون الجدد لن يستطيعوا الرفع' if not locked else 'المستخدمون يستطيعون الرفع'}", parse_mode="Markdown")
+
+    elif text == "🗑 مسح السجلات":
+        if role != ROLE_OWNER: return
+        try:
+            import glob as gl
+            for f in gl.glob("LOGS/*.log"):
+                open(f,'w').close()
+            bot.reply_to(m, "🗑 *تم مسح كل السجلات.*", parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(m, f"❌ `{e}`", parse_mode="Markdown")
+
+    elif text == "🕐 وقت التشغيل":
+        up = int(time.time() - BOT_START_TIME)
+        d, r = divmod(up, 86400)
+        h, r = divmod(r, 3600)
+        mn, s = divmod(r, 60)
+        bot.reply_to(m,
+            f"🕐 *وقت التشغيل*\n━━━━━━━━━━━━━━━━━\n"
+            f"⏱ `{d}` يوم `{h}` ساعة `{mn}` دقيقة `{s}` ثانية\n"
+            f"🚀 بدأ: `{datetime.fromtimestamp(BOT_START_TIME).strftime('%Y-%m-%d %H:%M')}`\n"
+            f"⚡ عمليات نشطة: `{len(running_procs)}`\n"
+            f"🔧 Threads: `{threading.active_count()}`",
+            parse_mode="Markdown")
+
+    elif text == "🔑 توليد كلمة سر":
+        import secrets, string
+        chars = string.ascii_letters + string.digits + "!@#$%^&*"
+        pwd8  = ''.join(secrets.choice(chars) for _ in range(8))
+        pwd16 = ''.join(secrets.choice(chars) for _ in range(16))
+        pwd32 = ''.join(secrets.choice(chars) for _ in range(32))
+        bot.reply_to(m,
+            f"🔑 *كلمات سر عشوائية:*\n━━━━━━━━━━━━━━━━━\n"
+            f"8 حروف: `{pwd8}`\n"
+            f"16 حرف: `{pwd16}`\n"
+            f"32 حرف: `{pwd32}`",
+            parse_mode="Markdown")
+
+    elif text == "📌 تثبيت رسالة":
+        if role != ROLE_OWNER: return
+        user_states[uid] = {"action":"pin_msg"}
+        bot.reply_to(m, "📌 اكتب الرسالة اللي عايز تثبّتها للكل:")
+
+    elif text == "🌡 درجة CPU":
+        try:
+            temps = psutil.sensors_temperatures() if hasattr(psutil,'sensors_temperatures') else {}
+            cpu_freq = psutil.cpu_freq()
+            cpu_pct  = psutil.cpu_percent(interval=1, percpu=True)
+            cores_txt = " | ".join([f"C{i}:`{p}%`" for i,p in enumerate(cpu_pct)])
+            freq_txt  = f"`{cpu_freq.current:.0f}` MHz" if cpu_freq else "غير متاح"
+            temp_txt  = "غير متاح"
+            if temps:
+                for k,v in temps.items():
+                    if v: temp_txt = f"`{v[0].current}°C`"; break
+            bot.reply_to(m,
+                f"🌡 *مراقبة CPU*\n━━━━━━━━━━━━━━━━━\n"
+                f"🔥 درجة الحرارة: {temp_txt}\n"
+                f"⚡ التردد: {freq_txt}\n"
+                f"📊 النوى: {cores_txt}",
+                parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(m, f"❌ `{e}`", parse_mode="Markdown")
+
+    elif text == "📋 نسخ السجل":
+        if not is_staff(uid): return
+        p = "LOGS/bot.log"
+        if os.path.exists(p):
+            with open(p,'rb') as f:
+                bot.send_document(m.chat.id, f, caption="📋 السجل الكامل")
+        else:
+            bot.reply_to(m, "❌ لا يوجد سجل.")
+
+    elif text == "🔃 إعادة تشغيل الكل":
+        if not is_staff(uid): return
+        count = 0
+        for fname, info in list(db["files"].items()):
+            if info.get("active"):
+                stop_file(fname)
+                time.sleep(0.2)
+                launch(info["path"], fname)
+                count += 1
+        bot.reply_to(m,
+            f"🔃 *تمت إعادة تشغيل {count} ملف*",
+            parse_mode="Markdown")
+
 # ══════════════════════════════════════════════════════════════
 #  دوال مساعدة
 # ══════════════════════════════════════════════════════════════
@@ -1208,10 +1642,11 @@ def _help(m):
 # ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     log.info("🚀 ELITE HOST BOT v3.0")
-    try:
-        bot.send_message(ADMIN_ID,
-            f"🟢 *ELITE HOST v3.0 يعمل!*\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            parse_mode="Markdown", reply_markup=kb_owner())
-    except Exception as e:
-        log.warning(f"Startup: {e}")
+    for admin in ADMIN_IDS:
+        try:
+            bot.send_message(admin,
+                f"🟢 *ELITE HOST v3.0 يعمل!*\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                parse_mode="Markdown", reply_markup=kb_owner() if admin == ADMIN_ID else kb_admin())
+        except Exception as e:
+            log.warning(f"Startup notify {admin}: {e}")
     bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
