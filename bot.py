@@ -418,9 +418,7 @@ threading.Thread(target=scheduler, daemon=True).start()
 # ══════════════════════════════════════════════════════════════
 def kb_owner():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
-    m.add(
-        types.KeyboardButton("📤 رفع ملف للاستضافة"),
-    )
+    m.add(types.KeyboardButton("📤 رفع ملف للاستضافة", request_document=True))
     m.add(
         "🖥 الاستضافة",     "⚙️ الحاويات",      "🔍 مراقبة العمليات",
         "📡 موارد السيرفر", "📋 السجلات",        "📊 الإحصائيات",
@@ -432,9 +430,7 @@ def kb_owner():
 
 def kb_admin():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=3)
-    m.add(
-        types.KeyboardButton("📤 رفع ملف للاستضافة"),
-    )
+    m.add(types.KeyboardButton("📤 رفع ملف للاستضافة", request_document=True))
     m.add(
         "🖥 الاستضافة",     "⚙️ الحاويات",      "🔍 مراقبة العمليات",
         "📡 موارد السيرفر", "📋 السجلات",        "📊 الإحصائيات",
@@ -445,13 +441,13 @@ def kb_admin():
 
 def kb_vip():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    m.add(types.KeyboardButton("📤 رفع ملف للاستضافة"))
+    m.add(types.KeyboardButton("📤 رفع ملف للاستضافة", request_document=True))
     m.add("📂 ملفاتي", "📡 السيرفر", "ℹ️ مساعدة")
     return m
 
 def kb_user():
     m = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    m.add(types.KeyboardButton("📤 رفع ملف للاستضافة"))
+    m.add(types.KeyboardButton("📤 رفع ملف للاستضافة", request_document=True))
     m.add("📂 ملفاتي", "ℹ️ مساعدة")
     return m
 
