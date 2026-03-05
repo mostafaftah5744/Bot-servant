@@ -1023,17 +1023,6 @@ def main_handler(m):
         return
 
     # ══ كل المستخدمين ════════════════════
-    if text == "📤 رفع ملف للاستضافة":
-        bot.reply_to(m,
-            "📤 *أرسل الملف الآن!*\n"
-            "━━━━━━━━━━━━━━━━━\n"
-            "• `.py` — بايثون\n"
-            "• `.js` — جافاسكريبت\n"
-            "• `.sh` — باش\n"
-            "• `requirements.txt` — مكاتب\n\n"
-            "سيتم فحصه واكتشاف مكاتبه وتشغيله تلقائياً ✅",
-            parse_mode="Markdown")
-        return
     if text == "📂 ملفاتي" or text == "/myfiles":
         _show_files(m); return
     if text in ["ℹ️ مساعدة","ℹ️ المساعدة"]:
