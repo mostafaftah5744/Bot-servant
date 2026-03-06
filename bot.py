@@ -255,21 +255,20 @@ def load_db():
 
 db = load_db()
 
+def save():
+    with open(DB_FILE,'w',encoding='utf-8') as f:
+        json.dump(db,f,ensure_ascii=False,indent=2)
+
 # ── تحديث الإعدادات القديمة بالقوة ──────────────────────────
 db["settings"]["credits_per_upload"]   = 0
 db["settings"]["upload_cost"]          = 6
 db["settings"]["credits_for_referral"] = 2
 db["settings"]["welcome_credits"]      = 0
 db["settings"]["vip_min_credits"]      = 500
-# صفّر النقاط الترحيبية للمستخدمين اللي عندهم 20 بس (ما دعوش حد)
 for u, info in db["users"].items():
     if info.get("credits", 0) == 20 and info.get("total_referred", 0) == 0 and info.get("uploads", 0) == 0:
         info["credits"] = 0
 save()
-
-def save():
-    with open(DB_FILE,'w',encoding='utf-8') as f:
-        json.dump(db,f,ensure_ascii=False,indent=2)
 
 # ══════════════════════════════════════════════════════════════
 #  الصلاحيات
